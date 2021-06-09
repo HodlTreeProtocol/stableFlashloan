@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.7.0;
+pragma solidity 0.7.2;
 import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import { AccessControlUpgradeable, AddressUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import { ERC20Upgradeable, IERC20Upgradeable, SafeMathUpgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 
-contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradeable, PausableUpgradeable, ERC20Upgradeable {
+contract LiquidityPoolV3_02 is ReentrancyGuardUpgradeable, AccessControlUpgradeable, PausableUpgradeable, ERC20Upgradeable {
 
 	using SafeMathUpgradeable for uint256;
-	using AddressUpgradeable for address;
 
-    bytes32 constant public PAUSER_ROLE = keccak256("PAUSER_ROLE");
+  bytes32 constant public PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
 	uint256 constant public N_TOKENS = 5; 
 	uint256 constant public NORM_BASE = 18;
@@ -32,6 +31,11 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 	event Withdraw(address indexed user, uint256[N_TOKENS] tokenAmounts, uint256 burnedAmount);
 	event Borrow(address indexed user, uint256[N_TOKENS] tokenAmounts, uint256 totalAmount, uint256 fee, uint256 adminFee);
 
+	modifier onlyPauser() {
+		require(hasRole(PAUSER_ROLE, msg.sender), "must have pauser role");
+		_;
+	}
+
 	function initialize(
 		uint256 depositFee_,
 		uint256 borrowFee_,
@@ -43,7 +47,7 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 		__ReentrancyGuard_init();
 		__AccessControl_init();
 		__Pausable_init_unchained();
-		__ERC20_init_unchained('LPToken', 'LPT');
+		__ERC20_init_unchained('HodlTree Flash Loans LP USD Token', 'hFLP-USD');
 		TOKENS = [
 			IERC20Upgradeable(0x57Ab1ec28D129707052df4dF418D58a2D46d5f51), // sUSD
 			IERC20Upgradeable(0x056Fd409E1d7A124BD7017459dFEa2F387b6d5Cd), // GUSD
@@ -98,6 +102,7 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 	)
 		public
 	{
+		require(newAdminFeeAddress_ != address(0), "admin fee address is zero");
 		require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "must have admin role to set admin fee address");
 		emit SetAdminFeeAddress(adminFeeAddress, newAdminFeeAddress_);
 		adminFeeAddress = newAdminFeeAddress_;
@@ -112,8 +117,8 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 	 */
 	function pause()
 		external
+		onlyPauser
 	{
-		require(hasRole(PAUSER_ROLE, msg.sender), "must have pauser role");
 		_pause();
 	}
 
@@ -122,8 +127,8 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 	 */
 	function unpause()
 		external
+		onlyPauser
 	{
-		require(hasRole(PAUSER_ROLE, msg.sender), "must have pauser role");
 		_unpause();
 	}
 
@@ -202,7 +207,7 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 		_burn(msg.sender, amount_);
 		for (uint256 i = 0; i < N_TOKENS; i++) {
 			if (outAmounts_[i] != 0)
-				require(TOKENS[i].transfer(msg.sender, outAmounts_[i]));
+				require(TOKENS[i].transfer(msg.sender, outAmounts_[i]), "token transfer failed");
 		}
 		emit Withdraw(msg.sender, outAmounts_, amount_);
 	}
@@ -216,12 +221,13 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 		nonReentrant
 		returns (uint256[N_TOKENS] memory outAmounts_)
 	{
-		require(adminBalance != 0, "admin balance is zero");
+		uint256 _adminBalance = adminBalance;
+		require(_adminBalance != 0, "admin balance is zero");
 		uint256 _totalBalance = _totalBalanceWithAdminFee();
 		uint256[N_TOKENS] memory _balances = _balancesWithAdminFee();
 		for (uint256 i = 0; i < N_TOKENS; i++) {
 			if(_balances[i] != 0){
-				outAmounts_[i] = adminBalance.mul(
+				outAmounts_[i] = _adminBalance.mul(
 					CALC_PRECISION
 				).div(
 					_totalBalance
@@ -233,7 +239,7 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 				require(TOKENS[i].transfer(adminFeeAddress, outAmounts_[i]));
 			}
 		}
-		emit WithdrawAdminFee(adminFeeAddress, outAmounts_, adminBalance);
+		emit WithdrawAdminFee(adminFeeAddress, outAmounts_, _adminBalance);
 		adminBalance = 0;
 	}
 	
@@ -253,7 +259,10 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 		uint256 _totalBalance = totalBalance();
 		for (uint256 i = 0; i < N_TOKENS; i++) {
 			if (amounts_[i] != 0) {
-				require( TOKENS[i].transferFrom(msg.sender, address(this), amounts_[i]) );
+				require(
+					TOKENS[i].transferFrom(msg.sender, address(this), amounts_[i]),
+					"token transfer failed"
+				);
 				_totalAmount = _totalAmount.add(amounts_[i].mul(TOKENS_MUL[i]));
 			}
 		}
@@ -341,11 +350,12 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 			);
 			if(amounts_[i] != 0) {
 				_totalAmount = _totalAmount.add(amounts_[i].mul(TOKENS_MUL[i]));
-				require(TOKENS[i].transfer(msg.sender, amounts_[i]));
+				require(TOKENS[i].transfer(msg.sender, amounts_[i]), "token transfer failed");
 			}
 		}
 		require(_totalAmount != 0, "flashloan total amount is zero");
-		address(msg.sender).functionCall(data_, "Flashloan low-level callback failed");
+		(bool _success, ) = address(msg.sender).call(data_);
+		require(_success, "flashloan low-level callback failed");
 		uint256 _fee = calcBorrowFee(_totalAmount);
 		require(
 			_totalBalanceWithAdminFee() >= _totalBalance.add(_fee),
@@ -475,7 +485,7 @@ contract LiquidityPoolV3_00 is ReentrancyGuardUpgradeable, AccessControlUpgradea
 				_outAmountPCT = _outAmountPCT.add(outAmountPCTs_[i]);
 			}
 		}
-		require(_outAmountPCT == PCT_PRECISION, "Total percentage is not 100% in ppm");
+		require(_outAmountPCT == PCT_PRECISION, "total percentage is not 100% in ppm");
 	}
 
 	/**
